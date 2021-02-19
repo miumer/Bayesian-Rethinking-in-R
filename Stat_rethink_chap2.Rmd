@@ -1,0 +1,84 @@
+---
+title: "Stat_rethink_chap2"
+author: "Siim"
+date: "2/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+d <-
+  tibble(p_1 = 0,
+         p_2 = rep(1:0, times = c(1, 3)),
+         p_3 = rep(1:0, times = c(2, 2)),
+         p_4 = rep(1:0, times = c(3, 1)),
+         p_5 = 1)
+
+head(d)
+```
+
+See visualiseerimise osa on meie seisukohalt vähese väärtusega, sest meid huvitab ainult kood, mis originaalallikas ka on. Lisamterjali autor on kõik pildid ka koodina kirjutad. Siin lihtsalt väike tutvustus:
+```{r}
+d %>% 
+  gather() %>% 
+  mutate(x = rep(1:4, times = 5),
+         possibility = rep(1:5, each = 4)) %>% 
+  ggplot(aes(x = x, y = possibility, 
+             fill = value %>% as.character())) +
+  geom_point(shape = 21, size = 5) +
+  scale_fill_manual(values = c("white", "navy")) +
+  scale_x_continuous(NULL, breaks = NULL) +
+  coord_cartesian(xlim = c(.75, 4.25),
+                  ylim = c(.75, 5.25)) +
+  theme(legend.position = "none")
+```
+
+```{r}
+tibble(draw            = 1:3,
+       marbles         = 4) %>% 
+  mutate(possibilities = marbles ^ draw) %>% 
+  knitr::kable()
+```
+
+Siit edasi raamatus olev kood
+```{r}
+ways <- c(0, 3, 8, 9, 0)
+
+ways / sum(ways)
+```
+
+Proovi erinevaid tõenbäosusi
+```{r}
+dbinom(x = 6, size = 9, prob = 0.5)
+```
+
+```{r}
+rbinom(n =100, size = 9, prob = 0.5)
+hist(rbinom(n =100, size = 9, prob = 0.5))
+```
+
+```{r}
+qbinom(0.16, 9, .5) #muuda sabasid
+```
+
+```{r}
+pbinom(q = 6, size = 9, prob = 0.5) #muuda sabasid 
+```
+
+```{r}
+tibble(prob = seq(from = 0, to = 1, by = .01)) %>% 
+  ggplot(aes(x = prob,
+             y = dbinom(x = 6, size = 9, prob = prob))) +
+  geom_line() +
+  labs(x = "probability",
+       y = "binomial likelihood") +
+  theme(panel.grid = element_blank())
+```
+
