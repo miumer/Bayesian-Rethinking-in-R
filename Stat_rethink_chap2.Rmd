@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(tidyverse)
+library(rethinking)
 ```
 
 ```{r}
@@ -50,27 +51,29 @@ tibble(draw            = 1:3,
 Siit edasi raamatus olev kood
 ```{r}
 ways <- c(0, 3, 8, 9, 0)
-
 ways / sum(ways)
 ```
 
 Proovi erinevaid tõenbäosusi
+
 ```{r}
-dbinom(x = 6, size = 9, prob = 0.5)
+rbinom(n = 100, size = 9, prob = 0.5)
+hist(rbinom(n =1000, size = 10, prob = 0.5))
 ```
 
 ```{r}
-rbinom(n =100, size = 9, prob = 0.5)
-hist(rbinom(n =100, size = 9, prob = 0.5))
+dbinom(x = 6, size = 10, prob = 0.5)
 ```
 
 ```{r}
-qbinom(0.16, 9, .5) #muuda sabasid
+pbinom(q = 5, size = 10, prob = 0.5, lower.tail = FALSE) #muuda sabasid
 ```
 
+
 ```{r}
-pbinom(q = 6, size = 9, prob = 0.5) #muuda sabasid 
+qbinom(0.1719, 10, 0.5, lower.tail=FALSE) #muuda sabasid
 ```
+
 
 ```{r}
 tibble(prob = seq(from = 0, to = 1, by = .01)) %>% 
@@ -80,5 +83,186 @@ tibble(prob = seq(from = 0, to = 1, by = .01)) %>%
   labs(x = "probability",
        y = "binomial likelihood") +
   theme(panel.grid = element_blank())
+```
+
+**2.4.1 Grid approximation**
+```{r}
+(d <-
+ tibble(p_grid            = seq(from = 0, to = 1, length.out = 20),  # define grid 
+        prior = ifelse( p_grid < 0.5, 0 , 1 )) %>%                                   # define prior
+   mutate(likelihood      = dbinom(6, size = 9, prob = p_grid)) %>%  # compute likelihood at each value in grid
+   mutate(unstd_posterior = likelihood * prior) %>%                  # compute product of likelihood and prior
+   mutate(posterior       = unstd_posterior / sum(unstd_posterior))  # standardize the posterior, so it sums to 1
+)
+```
+
+Visuaalselt ülemise df-i posterior
+```{r}
+d %>% 
+  ggplot(aes(x = p_grid, y = posterior)) + 
+  geom_point() +
+  geom_line() +
+  labs(subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank())
+```
+
+Sama asi, mis üleval, aint grid on lühike, ehk tõeliste parameetrite arv väike (5) ja seega hinnang väga robustne
+```{r}
+tibble(p_grid            = seq(from = 0, to = 1, length.out = 5),
+       prior             = 1) %>%
+  mutate(likelihood      = dbinom(6, size = 9, prob = p_grid)) %>%
+  mutate(unstd_posterior = likelihood * prior) %>%
+  mutate(posterior       = unstd_posterior / sum(unstd_posterior)) %>% 
+ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(subtitle = "5 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank())
+```
+
+Saame proovida erinevaid prioreid
+```{r}
+prior <- ifelse( p_grid < 0.5, 0 , 1 ) #saame need ülemisse tibble'isse panna
+prior <- exp( -5*abs( p_grid - 0.5 ) )
+```
+
+Kvadraatiline aproksimeerimine
+```{r}
+#'(suurendame kogu näites sampli suurus, 
+#'proportsion jääb samaks, mis raamatus)
+globe.qa <- map(
+  alist(
+    w ~ dbinom(9,p), #binomial likelihood
+    p ~ dunif(0,1)  # uniform prior
+  ),
+  data=list(w=6))
+
+precis(globe.qa)
+```
+
+```{r}
+#'analüütiline kalkulatsioon. Mis on beta jaotus?
+w <- 24
+n <- 36
+curve(dbeta(x, w+1, n-w+1), from=0, to=1)
+
+#'kvadraat aproksimatsioon. Siia sisestame precis()
+#'funktsioonist saadavad meani  ja Std. 
+curve(dnorm(x, 0.67, 0.08), lty=2, add=TRUE)
+```
+
+Markov-Chain online allikast.
+In the special case of a model using the binomial likelihood, the mean is the probability of a 1 in a given trial,  
+θ.
+```{r}
+globe_qa_brms <-
+  brm(data = list(w = 24), 
+      family = binomial(link = "identity"),
+      w | trials(36) ~ 1,
+      prior(beta(1, 1), class = Intercept),
+      iter = 4000, warmup = 1000,
+      control = list(adapt_delta = .9),
+      seed = 4)
+
+print(globe_qa_brms)
+
+```
+
+```{r}
+posterior_samples(globe_qa_brms) %>% 
+  mutate(n = "n = 36") %>%
+
+  ggplot(aes(x = b_Intercept)) +
+  geom_density(fill = "black") +
+  labs(x = "proportion water") +
+  xlim(0, 1) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~n)
+```
+
+
+```{r}
+#'ÜLESANDED lk 61
+
+
+
+#'2H1/H2
+twins1 <- (0.1*0.5)+(0.2*0.5)
+prob_tw_A <- 0.1
+prob_tw_B <- 0.2
+prob_A_tw <- (0.1*0.5)/twins1
+prob_B_tw <- (0.2*0.5)/twins1
+twins2 <- (prob_A_tw*0.1) + (prob_B_tw*0.2)
+twins2
+```
+
+```{r}
+#teine (õigem) viis:
+#'kaksikute tõenäosus valem: p(twins) = p(species=A)*p(twins|A)+p(species=B)*p(twins|B)
+#'Alguses on liikide tõenäosus sama, niiet prior on uniform. 
+#'Esimese sigimise posterior liikide tõenäosused saavad teise prioriks.
+#'p(tweens_2|tweens_1) = p(species=A|tweens_1)*p(twins|A)+p(species=B|tweens_1)*p(twins|B)
+#'Kaksikute saamise tõenäosus jääb saamaks, aga selle tõenäosus, mis liik on, muutub.
+#'Sellepärast muutub ka teiste kaksikute saamine. Update'ime.
+p_twins_A <- 0.1
+p_twins_B <- 0.2
+likelihood <- c(p_twins_A, p_twins_B)
+prior <- c(1, 1) #liikide esinemise tõenäosus on võrdne. (ükskõik, mis number, sest nagunii standardiseerime kaks rida all pool)
+unst_posterior <- prior * likelihood # A given twins ja B given twins ehk liikide esinemise tõenõosuste posteriorid
+std_posterior <- unst_posterior/sum(unst_posterior) # standardiseeritud posterior (Vt Bayes valemit) [sum(posterior) on k?ik viisid, kuidas saada twinse]
+
+sum(std_posterior*likelihood) #kaksikute t?en?osus valemi kasutamine
+```
+
+```{r}
+#'2H3
+#'Siin Update'ime natukene teistmoodi ja saame uue liigi esinemise
+#'tõenäosuse. 
+p_twins_A <- 0.1
+p_twins_B <- 0.2
+p_ones_A <- 0.9
+p_ones_B <- 0.8
+likelihood <- c(p_twins_A, p_twins_B)
+likelihood2 <- c(p_ones_A, p_ones_B)
+prior <- c(1, 1)
+posterior <- prior * likelihood
+posterior <- posterior/sum(posterior)
+posterior <- posterior*likelihood2
+posterior <- posterior/sum(posterior)
+posterior[1]
+```
+
+```{r}
+#2H4
+p_testA_A <- 0.8 #positive A given A
+p_testA_B <- 1-0.65#positive A given B
+likelihood <- c(p_testA_A, p_testA_B)
+p_twins_A <- 0.1#twins given A
+p_twins_B <- 0.2#twins given B
+likelihood_twins <- c(p_twins_A, p_twins_B)
+p_ones_A <- 0.9#ones given A
+p_ones_B <- 0.8#ones given B
+likelihood_ones <- c(p_ones_A, p_ones_B)
+prior <- c(1, 1)
+posterior <- prior * likelihood # A given test pos. A ja B given test pos. A
+posterior <- posterior/sum(posterior) # standardiseeritud
+posterior #B on madalam, sest test n?itab A-d B korral v?hem
+
+first_round <- posterior*likelihood_twins # A given twins given test pos A, B given twins given pos A
+first_round <- first_round/sum(first_round) #standardized
+first_round # B on t?usnud, sest kaksikud t?stavad B t?en?osust
+
+#Liikide t?en?osus kui teises raundis on ?ks laps
+posterior1_species <- first_round*likelihood_ones #A given one child, given twins, given test pos A
+posterior1_species <- posterior_species/sum(posterior_species)
+posterior1_species
+#liikide t?en?osused kui teises raundis on kaks last
+posterior2_species <- first_round*likelihood_twins
+posterior2_species <- posterior2_species/sum(posterior2_species)
+posterior2_species
 ```
 

@@ -1,0 +1,233 @@
+---
+title: "Stat_Rethink_chap3"
+author: "Siim"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(rethinking)
+library(tidyverse)
+library(tidybayes)
+```
+
+
+### Valimi moodustamine posteriorist, mis on saadud grid approximation abiga
+
+Kõigepealt loome grid approximationiga järeljaotuse
+```{r}
+p_grid <- seq( from=0 , to=1 , length.out=1000 ) 
+prior <- rep( 1 , 1000 ) 
+likelihood <- dbinom( 6 , size=9 , prob=p_grid ) 
+posterior <- likelihood * prior 
+posterior <- posterior / sum(posterior)
+```
+
+Nüüd võtame sellest järeljaotusest valimi. Pmtslt p-grid vektorist (koosneb suurest osast võimalikest parameetritest ehk vee proportsioonides, millel igalühel on oma kaal ehk tõenäosus, mida väljendab posterior. Esimene argument ja teine argument peavad olema ühe pikad)
+```{r}
+samples <- sample(p_grid, prob=posterior , size=1e4, replace=TRUE )
+```
+
+Vaatame valimit visuaalselt
+```{r}
+plot( samples )
+```
+
+```{r}
+dens(samples)
+```
+
+
+**Tidyverse'is sama asi**
+
+Grid aproximationiga posterior
+```{r}
+n <- 1001
+n_success <- 6
+n_trials  <- 9
+
+(
+  d <-
+  tibble(p_grid     = seq(from = 0, to = 1, length.out = n),
+         # note we're still using a flat uniform prior
+         prior      = 1) %>% 
+  mutate(likelihood = dbinom(n_success, size = n_trials, prob = p_grid)) %>% 
+  mutate(posterior  = (likelihood * prior) / sum(likelihood * prior))
+  )
+```
+
+poseriorist valim
+```{r}
+n_samples <- 1e4
+
+# make it reproducible
+set.seed(3)
+
+samples <-
+  d %>% 
+  sample_n(size = n_samples, weight = posterior, replace = T)
+
+glimpse(samples)
+```
+
+```{r}
+samples %>% 
+  mutate(sample_number = 1:n()) %>% 
+  
+  ggplot(aes(x = sample_number, y = p_grid)) +
+  geom_line(size = 1/10) +
+  labs(x = "sample number",
+       y = "proportion of water (p)")
+```
+
+```{r}
+samples %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_density(fill = "black") +
+  coord_cartesian(xlim = 0:1) +
+  xlab("proportion of water (p)")
+```
+
+### Summeerivate järelduste tegemine valimi põhjal
+
+Kui suur on tõenäosus, et vett on vähem kui 50%, "puhta" posteriori pealt
+```{r}
+d %>% 
+  filter(p_grid < .5) %>% 
+  summarise(sum = sum(posterior))
+```
+
+Posteriori põhjal moodustatud valimi põhjal sama asja tõenäosus ja tõenäosus, et vee tõenäosus jääb 0.5 ja 0.75 vahele. Sisuliselt vaatame kui suur osa kõigistnsimuleeritud valimi väärtustest jääb parameetri väärtuste 0.5 ja 0.75 vahele.
+```{r}
+sum(samples < 0.5 ) / 1e4
+sum( samples > 0.5 & samples < 0.75 ) / 1e4
+```
+
+Tidyverse'iga posteriorist võetud valimi põhjal sama asi:
+```{r}
+samples %>% 
+  filter(p_grid < .5) %>% 
+  summarise(sum = n() / n_samples)
+
+samples %>% 
+  filter(p_grid > .5 & p_grid < .75) %>% 
+  summarise(sum = n() / n_samples)
+```
+
+Kui eelmises vaatasime, et kui suur osa otsitud parameetri väärtuseid jääb mingisse tõenäosusvahemikku, siis nüüd vaatame, et mis on parameetripiirid, mis märgivad mingit tõenäosusvahemikku. Enne olid teada parameetrid nüüd on teada tõenäosused.
+
+Kasutame quantiles funktsiooni, et vaadata, väärtust, mis on 80% piiriks, ehk mis parameetri väärtusest jääb 80% väärtuseid alla poole.
+```{r}
+(q_80 <- quantile(samples$p_grid, prob = .8))
+```
+
+Sama asi, mis eelmine
+```{r}
+samples %>% 
+  select(p_grid) %>% 
+  pull() %>% 
+  quantile(prob = .8)
+```
+
+Nüüd vaatame mis paramteetrite väärtused märgivad piire, kuu jääb 80% väärtustest
+```{r}
+samples %>% 
+  summarise(`10th percentile` = quantile(p_grid, p = .1),
+            `90th percentile` = quantile(p_grid, p = .9))
+```
+
+Sama asi
+```{r}
+(q_10_and_90 <- quantile(samples$p_grid, prob = c(.1, .9)))
+```
+
+PIldid ka neist
+```{r}
+d %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_line(aes(y = posterior)) +
+  geom_ribbon(data = d %>% filter(p_grid < q_80),
+              aes(ymin = 0, ymax = posterior)) +
+  annotate(geom = "text",
+           x = .25, y = .0025,
+           label = "lower 80%") +
+  labs(x = "proportion of water (p)",
+       y = "density")
+
+d %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_line(aes(y = posterior)) +
+  geom_ribbon(data = d %>% filter(p_grid > q_10_and_90[1] & p_grid < q_10_and_90[2]),
+              aes(ymin = 0, ymax = posterior)) +
+  annotate(geom = "text",
+           x = .25, y = .0025,
+           label = "middle 80%") +
+  labs(x = "proportion of water (p)",
+       y = "density")
+```
+
+Siin teeme pmtslt uue posterior jaotuse, mis lähtub sellest, et saame 3 vett 3st viskest, mis tekitab kallutatud jaotusega, millega raamatus demomsntreeritakse seda, kuidas võrdsete sabadega intervallid võivad katki minna.
+```{r}
+# here we update the `dbinom()` parameters
+n_success <- 3
+n_trials  <- 3
+
+# update `d`
+d <-
+  d %>% 
+  mutate(likelihood = dbinom(n_success, size = n_trials, prob = p_grid)) %>% 
+  mutate(posterior  = (likelihood * prior) / sum(posterior))
+
+# make the next part reproducible
+set.seed(3)
+
+# here's our new samples tibble
+(
+  samples <-
+    d %>% 
+    sample_n(size = n_samples, weight = posterior, replace = T)
+)
+```
+
+Pmtslt
+```{r}
+quantile(samples$p_grid, prob = c(.25, .75))
+
+```
+
+Siin kasutame tidybaye'si. Esimese argumendiga anname simuleeritud valimi ja teine argument ütleb, et mõlemast otsast .25 maha võtta.
+```{r}
+median_qi(samples$p_grid, .width = .5)
+```
+
+Küsime erinevaid intervalle
+```{r}
+median_qi(samples$p_grid, .width = c(.5, .8, .99))
+```
+
+Annab meile siis hdi ehk intervalli, mille väärtused (parameetrid) moodustavad 50% valimist ja kuhu kuuluvad kõige kõrgema sagedusega väärtused (parameetrid)
+```{r}
+mode_hdi(samples$p_grid, .width = .5)
+```
+
+Saame suht lihtsalt leida järeljaotusest simuleeritud valimi järgi keskmine, mediaani ja moodi
+```{r}
+Mode(samples$p_grid)
+
+samples %>% 
+  summarise(mean   = mean(p_grid),
+            median = median(p_grid))
+```
+
+### Ennustuste simuleerimine
+
+
+```{r}
+dummy_w <- rbinom( 1e5 , size=9 , prob=0.7 ) 
+simplehist( dummy_w , xlab="dummy water count" )
+```
+
