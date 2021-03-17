@@ -1,0 +1,329 @@
+---
+title: "Stat_rethink_chap4"
+author: "Siim"
+date: "3/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+```
+
+
+```{r}
+library(rethinking)
+data(Howell1)
+d <- Howell1
+
+rm(Howell1)
+detach(package:rethinking, unload = T)
+library(brms)
+```
+ 
+```{r}
+glimpse(d)
+```
+
+```{r}
+d2 <- d %>% 
+  filter(age >= 18) %>% 
+  select(height)
+```
+
+Vaatame keskmise priorit
+```{r}
+ggplot(data = tibble(x = seq(from = 100, to = 250, by = .1)), 
+       aes(x = x, y = dnorm(x, mean = 178, sd = 20))) +
+  geom_line() +
+  ylab("density")
+```
+
+Standardhälbe prior
+```{r}
+tibble(x = seq(from = -10, to = 60, by = .1)) %>%
+  
+  ggplot(aes(x = x, y = dunif(x, min = 0, max = 50))) +
+  geom_line() +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme(panel.grid = element_blank())
+```
+
+Priorist lähtuv pikkuste jaotus
+```{r}
+n <- 1e4
+
+set.seed(4)
+tibble(sample_mu    = rnorm(n, mean = 178,       sd = 20), #1000 keskmist
+       sample_sigma = runif(n, min = 0,         max = 50)) %>% #1000 standardhälvet
+  mutate(x          = rnorm(n, mean = sample_mu, sd = sample_sigma)) %>% #1000 väärtust, mis vastavad 1000le mean ja sd paarile (1,1; 2,2 jne)
+  
+  ggplot(aes(x = x)) +
+  geom_density(fill = "black", size = 0) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(subtitle = expression(paste("Prior predictive distribution for ", italic(h[i]))),
+       x        = NULL) +
+  theme(panel.grid = element_blank())
+```
+
+Grid aprroximation Step 1: Loome andmestiku, kus on võimalike mu (tõeline pikkuse keskmine) ja sigma (tõeline pikkuse standardhälve), mis on gridina diskreetsed väärtused, kõik võimalikud kombinatsioonid
+```{r}
+n <- 200
+
+d_grid <-
+  tibble(mu    = seq(from = 140, to = 160, length.out = n),
+         sigma = seq(from = 4,   to = 9,   length.out = n)) %>% 
+  # we'll accomplish with `tidyr::expand()` what McElreath did with base R `expand.grid()`
+  expand(mu, sigma) # pmtslt loob kõik võimalikud kombinatsioonid kõigist loodud "mu" ja "sigma" väärtustewst
+
+head(d_grid)
+
+#expand näide
+nzma <- tibble(a = c("a","b","c"),
+       b = c("e","f","g")) %>% 
+  expand(a,b)
+```
+)
+Grid approximation Step 2: Loome ise funktsiooni, mis võtab sisendiks potentsiaalsed mu ja sigma. Väljundina annab sisendite poolt defineeritud normaaljaotuse kohase density kõigis height punktides ehk sisuliselt kõigi height likelihoodi logaritmilisel skaalal ja liidab need kokku (peaks korrutama, aga logaritmi tõttu liidame. Kasutame seda funktsiooni, et panna sinna sisse kõik meie 100k erinevat mu ja sigma kombinatsiooni, ja neist iga paari kohta võtta välja kõigi meie andmestikus olevate pikkuste 352 likelihoodi (see on 352 miljonit väärtust). 
+```{r}
+grid_function <- function(mu, sigma){
+  dnorm(d2$height, mean = mu, sd = sigma, log = T) %>% 
+    sum()
+}
+```
+
+Grid approximation Step 3: Täiendame oma 100k reaga (mu-d ja sigmad) df-i, lisade iga kombinatsiooni juurde nendele vastavast jaotusest pärinevate log-likelihoodide summa koos prioritega (Bayesi teoreemi joone pealne osa sisuliselt). Nii on meil kõigi 100k erineva mu ja sigma kombinatsiooni jaoks nähtavate andmete (352 andmepunktil põhinev likelihood iga mu ja sigma jaoks) saamise likelihood, millel igaühel on oma prior.
+```{r}
+d_grid <-
+  d_grid %>% 
+  mutate(log_likelihood = map2(mu, sigma, grid_function)) %>% 
+  unnest(c(log_likelihood)) %>% 
+  mutate(prior_mu       = dnorm(mu,    mean = 178, sd  = 20, log = T),
+         prior_sigma    = dunif(sigma, min  = 0,   max = 50, log = T)) %>% 
+  mutate(product        = log_likelihood + prior_mu + prior_sigma) %>% 
+  mutate(probability    = exp(product - max(product)))
+  
+head(d_grid)
+```
+
+Heatmap näitab, et kõige suurem tõenäosusega on kombinatsioon mu = 155 ja sigma = 7.8 vms
+```{r}
+d_grid %>% 
+  ggplot(aes(x = mu, y = sigma)) + 
+  geom_raster(aes(fill = probability),
+              interpolate = T) +
+  scale_fill_viridis_c(option = "A") +
+  labs(x = expression(mu),
+       y = expression(sigma)) +
+  theme(panel.grid = element_blank())
+```
+
+Võtame posteriorist keskmiste ja sigma kombinatsioonide valimi.
+```{r}
+set.seed(4)
+d_grid_samples <- 
+  d_grid %>% 
+  sample_n(size = 1e4, replace = T, weight = probability) #1000 rida nii, et rea sattumine valimisse sõltub tema posterior probability-st ehk weight-tist
+
+d_grid_samples %>% 
+  ggplot(aes(x = mu, y = sigma)) + 
+  geom_point(size = .9, alpha = 1/15) +
+  scale_fill_viridis_c() +
+  labs(x = expression(mu[samples]),
+       y = expression(sigma[samples])) +
+  theme(panel.grid = element_blank())
+```
+
+Valimis olevate mu ja sigma järeljaotused marginaliseerituna üle teise.
+```{r}
+d_grid_samples %>% 
+  select(mu, sigma) %>% 
+  gather() %>% 
+
+  ggplot(aes(x = value)) + 
+  geom_density(fill = "grey33", size = 0) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  xlab(NULL) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~key, scales = "free")
+```
+
+punkthinnangud moodile (või mediaanile, kui mode_hdi asemel median_hdi). See annab meile siis vahemiku nii, et kõrgeima densityga punkt on keskel.
+```{r}
+library(tidybayes)
+
+d_grid_samples %>% 
+  select(mu, sigma) %>% 
+  gather() %>% 
+  group_by(key) %>% 
+  mode_hdi(value)
+```
+
+brm. See on sama, mis raamtus ""flist ja m4.1" kokku ühes funktsioonis. Kasutame netiallika järgi half-cauchy priorit, mis pidavat kiirem olema
+```{r}
+b4.1_half_cauchy <- 
+  brm(data = d2, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178, 20), class = Intercept),
+                prior(cauchy(0, 1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+```
+
+Näeme, et convergence on toimunud mõlema parameetri osas. St, et HMC algoritm leidis piirkonna, kust enam välja ei liikunud, sest sellest piirkonnast välja jäävad väärtused lükati tagasi algoritmi poolt, kuna loss? oli liiga suur.  
+```{r}
+plot(b4.1_half_cauchy)
+```
+
+Tulemused näitavad, et pikkuse keskmine (averaging over sigma) on Gaussian jaotusega, mille keskmine on 154.61 ja standardhälve 0.41, ja 95% tõenäosusega jäävad väärtused 153.81 ja 155.42 vahele ümber selle suurima tõenäosusega pikkuse keskmise. 
+```{r}
+print(b4.1_half_cauchy)
+summary(b4.1_half_cauchy, prob = .89) #Võimaldab vaadata teistsugused intervalle
+```
+
+Teeme vähe iteratsioone, et vaadata, kuidas halb convergence välja näeb.
+```{r}
+b4.2 <- 
+  brm(data = d2, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178, .1), class = Intercept),
+                prior(cauchy(0, 1), class = sigma)),
+      iter = 500, warmup = 100, chains = 4, cores = 4,
+      seed = 4)
+```
+
+```{r}
+plot(b4.2)
+```
+
+brm pakett võtab valimid (keskmiste ja sd-de) otse HMC samplerist (sellest osast, kus sampler on convergei'nud. Sellep ongi oluline panna kirja, millist osa eirata).
+```{r}
+post <- posterior_samples(b4.1_half_cauchy)
+```
+
+Saame posterior valimi kvantiilid ehk valitud tõenäosuseid märkivate vahemike piiripunktid
+```{r}
+t(apply(post[, 1:2], 2, quantile, probs = c(.5, .025, .75)))
+```
+
+Sarnane output
+```{r}
+posterior_summary(b4.1_half_cauchy)
+```
+
+Netiallikast: 
+
+But sometimes you want to actually model $\sigma$, such as in the case where your variances are systematically heterogeneous. Bürkner calls these kinds of models distributional models, which you can learn more about in his vignette Estimating Distributional Models with brms. As he explained in the vignette, you actually model   log($\sigma$) in those instances. If you’re curious, we’ll practice with a model like this in Chapter 9.
+
+
+```{r}
+ggplot(data = d, 
+       aes(x = male, y = height)) +
+  geom_point(shape = 1, size = 2) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+```{r}
+sd(d3[d3$male == 0,]$height)
+sd(d3[d3$male == 1,]$height)
+```
+
+Proovin teha mudelit, kus kasutan sugu, mitte nagu näites kasutatakse pikkust. Kuna mudelisse lähevad mehed ja naised mõlemad ja intercept puudub, seljuhul näitavad koefitsendid meeste ja naiste väärtuseid otse ja mitte nende vahet.
+```{r}
+d3 <- d %>% 
+  select(height, male) %>% 
+  mutate(female = 1 - male)
+
+
+b4.3 <- 
+  brm(data = d3, family = student(), #student, kui on outliereid
+      bf(height ~ 0 + male + female),
+      #prior = c(prior(student_t(3,0,1), class = b), #default priorid on praegu
+                #prior(student_t(3,0,1), class = sigma)),
+      control = list(adapt_delta = 0.95),
+      iter = 2000, warmup = 500, chains = 4, cores = 4,
+      seed = 4)
+```
+
+```{r}
+plot(b4.3)
+rope <- rope(b4.3)[1,c("ROPE_high")]
+```
+
+```{r}
+summary(b4.3)
+```
+
+```{r}
+library(magrittr)
+library(forcats)
+library(tidyr)
+library(modelr)
+library(ggdist)
+library(tidybayes)
+library(cowplot)
+library(ggrepel)
+library(RColorBrewer)
+library(bayestestR)
+```
+
+Kui me tahame simuleerida andmeid, et näidata ebakindlust, siis peaksime kaaluma standardhälvete mudeldamist vastavalt andmetele
+```{r}
+#Andmete simuleerimiseks
+var_sim<-tibble(male = rep(c(0,1), 500),
+                female = rep(c(1,0), 500))
+
+#Andmete simuleerimine jaotustest
+pred_height <-
+  predict(b4.3,
+          newdata = var_sim,
+          cores = 4) %>%
+  as_tibble() %>%
+  bind_cols(var_sim)
+
+plot(b4.3)
+
+d3 %>% 
+  ggplot(aes(x = as.factor(male), y = height, fill = as.factor(male))) +
+  ggtitle("Distribution of raw data")+
+  geom_violin(trim=FALSE, alpha =0.5)+
+  geom_jitter(shape=10, position=position_jitter(0.05), color = "#7570B3")+
+  geom_boxplot(width=0.15, fill = "white", alpha = 0.5, color = "black" )+
+  scale_fill_brewer(palette="Dark2")
+
+posterior_samples(b4.3) %>%
+  select(b_male, b_female) %>% 
+  gather(key = "group", value = "mean_height", b_male, b_female) %>% 
+  ggplot(aes(x = mean_height, y = group, fill = group)) +
+  ggtitle("Model implied distribution of means of variations")+
+  stat_halfeye()+
+  scale_fill_brewer(palette="Dark2")
+  
+pred_height %>% 
+  filter(Estimate > min(d3$height) & Estimate < max(d$height)) %>% 
+  ggplot(aes(x = as.factor(male), y = Estimate, fill = as.factor(male))) +
+  ggtitle("Distribution of raw data")+
+  geom_violin(trim=FALSE, alpha =0.5)+
+  geom_jitter(shape=10, position=position_jitter(0.05), color = "#7570B3")+
+  geom_boxplot(width=0.15, fill = "white", alpha = 0.5, color = "black" )+
+  scale_fill_brewer(palette="Dark2")
+
+  
+posterior_samples(b4.3) %>% 
+  transmute(dif = b_male - b_female) %>% 
+  ggplot(aes(x = dif, y = 0)) +
+  ggtitle("Model implied distribution of difference of means of height")+
+  stat_halfeye(fill = "#66A61E", 
+                point_interval = median_hdi, .width = .95, alpha = 0.7) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(x = expression(alpha["male"] - alpha["female"])) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+

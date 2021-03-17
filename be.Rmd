@@ -1,0 +1,372 @@
+---
+title: "Mid-project report"
+author: "Siim and Maria"
+date: "9/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo = FALSE, warning=FALSE, message = FALSE}
+library(tidyverse)
+library(brms)
+library(magrittr)
+library(forcats)
+library(tidyr)
+library(modelr)
+library(ggdist)
+library(tidybayes)
+library(cowplot)
+library(ggrepel)
+library(RColorBrewer)
+library(bayestestR)
+library(scales)
+library(kableExtra)
+```
+
+```{r echo = FALSE, warning = FALSE, message=FALSE}
+andmed <- read_csv("andmed2.csv")
+```
+
+```{r echo = FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+##DATA PREP, MODEL AND FUNCTIONS
+
+#Aggregate data for binomial test
+conv_data2 <- tibble(variation = c("A", "B"),
+                     n = c(31665, 31752),
+                     conversions =c(472, 460))
+
+#Raw data prep for binomial test
+conv_data <- andmed %>% 
+  group_by(variation) %>% 
+  summarize(n = n(),
+            conversions = sum(.[,2] > 0)) %>% 
+  ungroup() %>% 
+  mutate(rate = (.[,3]/.[,2])*100)
+
+#Binomial model
+fit <- brm(family = binomial,
+           conversions | trials(n) ~ variation,
+           data = conv_data2,
+           iter = 2000,
+           warmup = 500,
+           refresh = 0)
+
+#Transform logits to probability function
+logit2prob <- function(logit){
+  odds <- exp(logit)
+  prob <- odds / (1 + odds)
+  return(prob)
+}
+```
+First some remarks above the report below and an issue that came up:  
+
+I have used the data about Paying Customers (PC-s from now on) here because there is some confusion about how you count Paying Customers and don't regard the NPC-s who only subscribe a short period Paying Customers anymore at the end of the test. So these peoples MRR is essentially zero so the analysis below uses only Paying Customers and conversion to Paying Customers. In my view (if i understand correctly) this is somewhat problematic because then the status as Paying Customer depends on how long you run the test (which seems kind of arbitrary as far as PC vs NPC status goes). NPC-s who only subscribe a short period also bring in revenue altho not reocurring revenue...so they shoud still be counted toward revenue...or not? Since we are modeling the future here, and in the future there will also be people coming to the website who subscribe for a short period but still bring in revenue, so they so count towards the MRR maybe? Or is there some other reason why you strictly only deal with people who happen to PC-s at the end of a test? Anyway the following is based on MRR which comes from people who are PC-s at the end of the test. We can discuss wednesday:).. If somewhere below i have written NPC then it should be PC.
+
+NB! **Some number can be slightly different on the tables and graphs compared to the text explanations because the simulation runs again everytime i produce the document and the text stays the same if i don't change it (too much work) and i forgot to set a seed in the beginning (make it so the outpute doesn't change) and would have to go over the whole text to change the numbers.**
+
+### Moving on to the report  
+
+This thing here and hopefully the tool in the end has three major parts:   
+1) Conversion rate analysis  
+2) Mean MRR per PC analysis   
+3) Expected MRR per visitor (or signup) analysis.  
+
+And this is the order thing will be handled in the report below.
+
+### Conversion rate analysis
+
+Here you basically see the table you would get with the original A/B testing tool with the same data. I have entered the proportions in here (sample size and PCs). PC proportions are important for MRR calculation and it will be clear later why. You could actually use singups as the sample size and take the rate of PC-s from that, which could also give important insight. That would enable a different interpretation of the overall MRR explained later.   
+```{r echo = FALSE}
+##TABLE OF CONVERSION RATE STATISTICS
+
+#Probability of out performing for each variation
+outperforming <- posterior_samples(fit) %>%
+  select(1:2) %>%
+  mutate(varA_per = logit2prob(.[,1]) , VarB_per = logit2prob(.[,1]+.[,2])) %>%
+  select(varA_per, VarB_per) %>% 
+  summarise(a_better = paste0(round((sum(.[,1]>.[,2])/n())*100,2),"%"),
+            b_better = paste0(round((sum(.[,2]>.[,1])/n())*100,2),"%")) %>% 
+  gather(key = variation, value = `Prob. of outperforming`, a_better, b_better) %>% 
+  select(`Prob. of outperforming`)
+
+#Uses the back-transformed (with logit2prob) model coefficinets to calculate uplift
+uplift <- function(x,y){
+   b_rate = logit2prob(x+y)
+   dif = b_rate - logit2prob(x)
+   uplift = dif/logit2prob(x)
+   return(uplift)
+}
+
+#Table of conversion-rate statistics
+conv_data2 %>% 
+  cbind(., outperforming) %>%
+  mutate(CR = paste0(round((conversions/n)*100,2),"%")) %>%
+  mutate(uplift = c("", paste0(round(uplift(posterior_summary(fit)[1,1],posterior_summary(fit)[2,1])*100,2
+),"%"))) %>% 
+  kbl(caption = "Conversion rate statistics") %>% 
+  kable_styling()
+```
+
+This is a graph of the model implied  probability distribution of possible conversion rates for the two variations. The thicker interval beneath the curve is the 66% interval and the thinner one is the 95% one. They show the probability of the true conversion rate being in a certain interval. In the actual tool i can add numbers to the endpoints of these intervals or possibly a slider on the graph to see the value at each point on the curve.  
+
+```{r echo = FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+##GRAPHS OF CONVERSION RATES
+  
+#Conversion rates for variations
+posterior_samples(fit) %>% 
+  select(1:2) %>%
+  mutate(`Variation A` = logit2prob(.[,1]), `Variation B` = logit2prob(.[,1]+.[,2])) %>%
+  select(`Variation A`, `Variation B`) %>% 
+  gather(key = "variation", value = "CR", `Variation A`, `Variation B`) %>% 
+  ggplot(aes(x = CR, fill = variation, color = fct_rev(variation))) +
+  ggtitle("Conversion (visitor to pc) rates for the variations")+
+  stat_slab(alpha = .5)+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_fill_brewer(palette="Dark2")+
+  scale_x_continuous(name  = "Conversion Rate", n.breaks = 10, labels = percent)+
+  scale_y_continuous(NULL, breaks = NULL) +
+  guides(color = FALSE, fill = guide_legend(title=NULL))+
+  theme_bw() 
+```
+
+This is the probability distribution of the difference of conversion rates. This is also displayed on the original tool you are using now. With these rates (visitors vs pc-s) the original tool doesn't give a very clear output on this tho.  
+
+```{r echo = FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+#Distribution of difference of conversion rates
+posterior_samples(fit) %>%
+  select(1:2) %>%
+  mutate(varA_per = logit2prob(.[,1]), VarB_per = logit2prob(.[,1]+.[,2])) %>%
+  select(varA_per, VarB_per) %>% 
+  transmute(dif = varA_per-VarB_per) %>% 
+  ggplot(aes(x = dif)) +
+  ggtitle("Distribution of difference in conversion rate (visitor to pc)")+
+  stat_slab(alpha = .5, fill = "#7570B3")+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_x_continuous(name  = "Difference in conversion Rate", n.breaks = 10, labels = percent)+
+  scale_y_continuous(NULL, breaks = NULL) +
+  guides(color = FALSE, fill = guide_legend(title=NULL))+
+  theme_bw() 
+```
+
+## MRR per NPC analysis
+
+From here on out everything pertains to a datafile from zeppelin you would have to enter into the machine. This first part here shows descriptive statistics about the MRR of the **raw data**. No models have been applied yet. I can add anything you want here, but for now i took the liberty to put these things in the table:  
+
+1) mean   
+2) standard deviation  
+3) max MRR contribution within a variation  
+4) min MRR contribution within a variation  
+5) 25% quantile: the value from which 25% of values (by count) are lower (and 75% higher)  
+6) median: the value under which and over which 50% of values lie  
+7) 75% quantile: the value from which 75% of value are lower (and 25% higher)
+
+The graph displays the distribution of the actual data points (in purple) or in other words each company that became an NPC during the test with the MRR on the y axis.
+
+The manta-ray looking things are violin-plots which are basically the regular probability distribution plot (like the ones above) but turned on its side and mirrored on both sides. So a more pronounced the peak means more values (PC-s) in that area of MRR. 
+
+The box-plots in the middle show the median (the middle line of the box) and the edges of the boxes show the 25th and 75th quantiles so 50% of the data lie within the box and with the highest concentration.  
+
+You can see that some companies made like 475 MRR contributions on variation B ...which are kind of outliers... 
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+##RAW MRR TABLES AND GRAPH
+
+npc_dat <- andmed %>%
+  mutate(variation = recode(variation, `original` = "A", `variation #1`="B")) %>% 
+  rename(firstmrr = 2)
+
+npc_dat %>%
+  #filter(.[[2]] < 2000) %>% #Võimalik filter, et outliereid eemaldada
+  group_by(variation) %>% 
+  summarise(mean = mean(.[[2]]),
+            SD = sd(.[[2]]),
+            max = max(.[[2]]),
+            min= min(.[[2]]),
+            Q25 = quantile(.[[2]], prob = c(.25)),
+            median = median(.[[2]]),
+            Q75 = quantile(.[[2]], prob = c(.75))) %>% 
+  kbl(caption="Overview of raw PC data") %>% 
+  kable_styling()
+
+
+npc_dat %>% 
+  #filter(.[[2]] < 2000) %>% #Võimalik filter, et outliereid eemaldada
+  ggplot(aes(x = as.factor(variation), y = .[[2]], fill = as.factor(variation))) +
+  ggtitle("Distribution of raw data")+
+  geom_violin(trim=FALSE, alpha =0.5)+
+  geom_jitter(shape=10, position=position_jitter(0.05), color = "#7570B3")+
+  geom_boxplot(width=0.15, fill = "white", alpha = 0.5, color = "black" )+
+  scale_fill_brewer(palette="Dark2")+
+  scale_x_discrete(name = "Variation")+
+  scale_y_continuous(name = "MRR", n.breaks = 20)+
+  guides(fill=guide_legend(title = "Variations"))
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE, echo = FALSE, results='hide'}
+##DATA PREP AND MODEL FOR MRR ANALYSIS
+
+#parametrization for logit regression without intercept
+npc_wide <- npc_dat %>% 
+  select(1, 2) %>% 
+  mutate(A = as.numeric(as.character(factor(variation, labels=c(1,0))))) %>% 
+  mutate(B = 1-A)
+
+#Bayesian logit model
+b4.3 <- 
+  brm(data = npc_wide, family = student(), #student, kui on outliereid
+      bf(firstmrr ~ 0 + A + B),
+      #prior = c(prior(student_t(3,0,1), class = b), #default priorid on praegu
+                #prior(student_t(3,0,1), class = sigma)),
+      control = list(adapt_delta = 0.95),
+      iter = 2000, warmup = 500, chains = 4, cores = 4,
+      seed = 4) 
+```
+
+```{r echo = FALSE, eval = FALSE, warning=FALSE, message=FALSE}
+#Convergence plot
+plot(b4.3)
+```
+
+Next we move into model territory. The table here shows the output of the model which simulates mean MRR per company.  
+1) **Estimate** column tell you what the models predicts the most likley mean MRR per one PC is for the variations.    
+2) **Est.Error** column tells you what the standard-deviation of that prediction of mean MRR per PC is in that prediction.   
+3) **Q2.5 and Q97.5** are basically the thin lines on the graph below or in other words the borders of MRR values within which the true MRR per NPC lies in with 95% probability according to the model.  
+4) **Prob. of outperforming** tells you the probability that the MRR per PC is bigger for one or the other variation 
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+mrr_better <- posterior_samples(b4.3) %>% 
+  summarise(a_better = paste0(round((sum(.[,1]>.[,2])/n())*100,2),"%"),
+            b_better = paste0(round((sum(.[,2]>.[,1])/n())*100,2),"%")) %>% 
+  gather(key = variation, value = `Prob. of outperforming`, a_better, b_better) %>% 
+  select(`Prob. of outperforming`)
+
+#Table of model results
+as.data.frame(posterior_summary(b4.3)) %>% 
+  rownames_to_column(var = "Variation") %>%
+  filter(Variation != "sigma" & Variation != "nu" & Variation != "lp__") %>% 
+  mutate(Variation = recode(Variation, `b_A`="A", `b_B` = "B")) %>%
+  cbind(mrr_better) %>% 
+  kbl(caption = "Table of model implied estimates of mean MRR per PC per variation") %>% 
+  kable_styling()
+```
+
+The graphs go with the table. This one below shows the probability distribution of  **mean MRR per PC** for the two variations. While the violin plots show the distribution of the data (the actual PC-s), this plot here shows the probability distribution of possible **mean per PC** and not the distribution of the individual PCs as data points. It is important here that the model derives a probability distribution of the mean MRR per PC not the distribution of individual MRR points or contributions of the PC-s. Looking at this plot and the green bar underndeath, you can say that there is a 95% probability that for the A variation the expected value (mean) of one PC in MRR is between 48 EUR and 77.5 EUR. You can also say there is a 66% probability that one NPC contributes on average between around 55eur and 67.5 EUR (the thicken lines) in variation A. Conclusion of the same vain could be made for variation B. This is all saying something about "given that a variation gets an PC, what is their expected MRR".
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+  #Distribution of mean MRR per NPC for both variations
+posterior_samples(b4.3) %>%
+  select(b_A, b_B) %>% 
+  gather(key = "variation", value = "mean_mrr", b_A, b_B) %>% 
+  ggplot(aes(x = mean_mrr, fill = variation , color = fct_rev(variation)))+
+  ggtitle("Distributions of model implied mean MRR per PC per variation")+
+  stat_slab(alpha = .5)+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_fill_brewer(palette="Dark2")+
+  scale_x_continuous(name  = "Mean MRR per PC", n.breaks = 20, labels = dollar_format(suffix = "€", prefix = ""))+
+  scale_y_continuous(NULL, breaks = NULL) +
+  guides(color = FALSE, fill = guide_legend(title=NULL))+
+  theme_bw() 
+```
+
+Here is  another plot describing the same model. This is the probability distribution for the difference of **the mean MRR per NPC**. This shows the probability distribution of the expected difference of mean MRR per PC between variations. Here the area over 0 EUR coincides with the above tables "Prob. of being better" for variation A and the area under 0 EUR is basically the "Prob. of being better" for variation B.
+
+The midpoint means the most probable difference between the variations. This is the same as just looking at the table and deducting the variation B Estimate from the variation A estimate - so like 14.5EUR. Looking at this (and the interval lines), you can also say something like: theres a 95% probability that the difference between A and B (A-B) is between -5EUR and 32.5EUR. So basically theres is some probability that it is below 0 or there is no difference. But also 66% probability that it is between 5EUR and 22.5EUR. Or something like: the the highest probability is that the difference in MRR per PC is between 10 and 20 EUR. I could make a sepparate table for this distribution too (like the mean, sd, 95% quantiles etc, but as i said if i can put a slider on the graoph itself you can just move it to where the points are and get the numbers like that)
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+#Distribution of difference of mean MRR per PC between two variations
+posterior_samples(b4.3) %>% 
+  transmute(dif = b_A - b_B) %>% 
+  ggplot(aes(x = dif)) +
+  ggtitle("Distribution of model implied difference of mean MRR per NPC between variations")+
+  stat_slab(alpha = .5, fill = "#7570B3")+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_y_continuous(NULL, breaks = NULL) +
+  scale_x_continuous(name  = "mean MRR per PC of A - mean MRR per PC of B", n.breaks = 20, labels = dollar_format(suffix = "€", prefix = ""))+
+  theme_bw()
+```
+
+##  MRR per visitor (or signup) analysis
+
+Now we move on to the third part where both of the previous parts are combined. Conceptually this means that we take the probability of a single **visitor** being converted (conversion rate from visitor to PC) and multiply that probability by the value they are expected to produce in MRR. With that we get the expected value of a single **visitor**. The great thing here is that, if in the first part of conversion rate analysis you don't enter the **visitor** and "PC" numbers but you enter the **"signup"** and "PC" numbers, then you will get here the expected MRR per **signup** not per **visitor**. So it is possible to see how much MRR a variation is expected to produce per visitor OR per singup. Thats why it is good to be able to enter the proportions in the beginning. 
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+#SET UP FOR OVERALL ANALYSIS
+
+post_samp_transformed <- posterior_samples(fit) %>%
+  select(1:2) %>%
+  mutate(varA_per = logit2prob(.[,1]), VarB_per = logit2prob(.[,1]+.[,2])) %>%
+  select(varA_per, VarB_per) 
+
+#Set up
+overall_results <- posterior_samples(b4.3) %>%
+  select(b_A, b_B) %>% 
+  mutate(A_overall = b_A*post_samp_transformed$varA_per,
+         B_overall = b_B*post_samp_transformed$VarB_per) %>% 
+  select(A_overall, B_overall)
+```
+
+We start with a table again. Here the mean gives you the expected MRR per each visitor. SD gives you the standard deviation of that mean MRR per visitor. Quantiles give you again the points of MRR between which 50% of the values lie. Prob. of outperforming stems again from the last plot (of differences) below. The Prob. of outperforming tells you the probability of per visitor MRR being bigger in one or the other site.  
+
+We can see here that the Prob. of outperforming is actually smaller on MRR per visitor than on MRR per PC (that we saw before). This comes from the fact that the conversion rate (the first part of analysis) is more even between the variations than MRR per PC (where variation A outshines quite a bit). The more even conversion rate corrects the overall expected MRR per visitor a little bit and draws it back.
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+overall_better <- overall_results%>% 
+  summarise(a_better = paste0(round((sum(.[,1]>.[,2])/n())*100,2),"%"),
+            b_better = paste0(round((sum(.[,2]>.[,1])/n())*100,2),"%")) %>% 
+  gather(key = variation, value = `Prob. of outperforming`, a_better, b_better) %>% 
+  select(`Prob. of outperforming`)
+
+overall_results %>%
+  rename(A = "A_overall", B = "B_overall") %>% 
+  gather(key="Variation", value = "Values", A, B)%>%
+  group_by(Variation) %>% 
+  summarise(mean = round(mean(Values),2),
+            SD = round(sd(Values),),
+            Q25 = round(quantile(Values, prob = c(.025)),2),
+            Q75 = round(quantile(Values, prob = c(.975)),2)) %>% 
+  cbind(overall_better) %>%
+  mutate(`MRR per 1000 visitors` = 1000*mean) %>% 
+  kbl(caption="Difference of MRR per visitor/signup") %>% 
+kable_styling()
+``` 
+
+
+This graph is no different from the previous similar ones. It shows the distribution of expected MRR per visitor for both variations. For example for variation A the most probable ammount of MRR variation A will make for every person that visits the Pipedrive website, is 1.10 EUR while for variation B it is around 0.77EUR. So if 1000 visit the site, you can expect to make 1100EUR on variation A and 770EUR on variation B. Also you can say for example that with 95% probability you will make between 950EUR and 1500 EUR from variation A if 1000 people visit the website.
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+#Most likely difference per one visitor
+keskmine_vahe <- overall_results %>% 
+  summarise(mean(A_overall-B_overall))
+
+#How much we would expect to make from one VISITOR (since most of them are zero)
+overall_results %>%
+  gather(key = "variation", value = "overall", A_overall, B_overall) %>% 
+  ggplot(aes(x = overall, fill = variation , color = fct_rev(variation)))+
+  ggtitle("Model implied distributions of MRR per visitor")+
+  stat_slab(alpha = .5)+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_fill_brewer(palette="Dark2")+
+  scale_x_continuous(name  = "MRR per visitor", n.breaks = 20, labels = dollar_format(suffix = "€", prefix = ""))+
+  scale_y_continuous(NULL, breaks = NULL) +
+  guides(color = FALSE, fill = guide_legend(title=NULL))+
+  theme_bw() 
+```
+
+This last plot shows again the probability distribution of the difference of MRR per visitor to the site between the two variations. This is basically where the Prob. of outperforming comes from (how much of the density is under or over 0 EUR). Also you can say that the most likely difference between the variations is around 34cents (coincides with the table above: meanA-meanB) and with 66% probability it is between 10 cents and 57 cents per visitor.
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+#MRR difference per visitor
+overall_results %>% 
+  transmute(dif2 = A_overall-B_overall) %>% 
+  ggplot(aes(x = dif2)) +
+  ggtitle("Model implied distribution of difference of overall MRR")+
+  stat_slab(alpha = .5, fill = "#7570B3")+
+  stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
+  scale_y_continuous(NULL, breaks = NULL) +
+  scale_x_continuous(name  = "Difference in overall revenue", n.breaks = 20, labels = dollar_format(suffix = "€", prefix = ""))+
+  theme_bw()
+```
+

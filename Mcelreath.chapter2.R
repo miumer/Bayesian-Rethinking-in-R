@@ -36,8 +36,6 @@ plot(p_grid, posterior, type="b" ,
      mtext("20 points")
      
 #installin STANi ja rethinking paketi
-install.packages("rethinking")
-library(rethinking)
 install.packages("rstan", repos = "https://cloud.r-project.org/", dependencies = TRUE)
 pkgbuild::has_build_tools(debug = TRUE)
 install.packages(c('devtools','coda','mvtnorm')) 
