@@ -140,12 +140,12 @@ posterior_samples(fit) %>%
   select(1:2) %>%
   mutate(varA_per = logit2prob(.[,1]), VarB_per = logit2prob(.[,1]+.[,2])) %>%
   select(varA_per, VarB_per) %>% 
-  transmute(dif = varA_per-VarB_per) %>% 
+  transmute(dif = (varA_per-VarB_per)/mean(varA_per)) %>% 
   ggplot(aes(x = dif)) +
   ggtitle("Distribution of difference in conversion rate (visitor to pc)")+
   stat_slab(alpha = .5, fill = "#7570B3")+
   stat_pointinterval(position = position_dodge(width = .4, preserve = "single"))+
-  scale_x_continuous(name  = "Difference in conversion Rate", n.breaks = 10, labels = percent)+
+  scale_x_continuous(name  = "Difference in conversion Rate", n.breaks = 20, labels = percent)+
   scale_y_continuous(NULL, breaks = NULL) +
   guides(color = FALSE, fill = guide_legend(title=NULL))+
   theme_bw() 
@@ -178,23 +178,27 @@ npc_dat <- andmed %>%
   mutate(variation = recode(variation, `original` = "A", `variation #1`="B")) %>% 
   rename(firstmrr = 2)
 
-npc_dat %>%
-  #filter(.[[2]] < 2000) %>% #Võimalik filter, et outliereid eemaldada
+npc_dat %>% 
   group_by(variation) %>% 
-  summarise(mean = mean(.[[2]]),
-            SD = sd(.[[2]]),
-            max = max(.[[2]]),
-            min= min(.[[2]]),
-            Q25 = quantile(.[[2]], prob = c(.25)),
-            median = median(.[[2]]),
-            Q75 = quantile(.[[2]], prob = c(.75))) %>% 
+  mutate(mean= mean(firstmrr))
+
+npc_dat %>%
+  #filter(.[[2]] < 300) %>% #Võimalik filter, et outliereid eemaldada
+  group_by(variation) %>% 
+  summarise(mean = mean(firstmrr),
+            SD = sd(firstmrr),
+            max = max(firstmrr),
+            min= min(firstmrr),
+            Q25 = quantile(firstmrr, prob = c(.25)),
+            median = median(firstmrr),
+            Q75 = quantile(firstmrr, prob = c(.75))) %>% 
   kbl(caption="Overview of raw PC data") %>% 
   kable_styling()
 
 
-npc_dat %>% 
+a <- npc_dat %>% 
   #filter(.[[2]] < 2000) %>% #Võimalik filter, et outliereid eemaldada
-  ggplot(aes(x = as.factor(variation), y = .[[2]], fill = as.factor(variation))) +
+  ggplot(aes(x = as.factor(variation), y = log(firstmrr), fill = as.factor(variation))) +
   ggtitle("Distribution of raw data")+
   geom_violin(trim=FALSE, alpha =0.5)+
   geom_jitter(shape=10, position=position_jitter(0.05), color = "#7570B3")+
@@ -218,7 +222,7 @@ npc_wide <- npc_dat %>%
 #Bayesian logit model
 b4.3 <- 
   brm(data = npc_wide, family = student(), #student, kui on outliereid
-      bf(firstmrr ~ 0 + A + B),
+      bf(log(firstmrr) ~ 0 + A + B, sigma ~ 0 + A + B),
       #prior = c(prior(student_t(3,0,1), class = b), #default priorid on praegu
                 #prior(student_t(3,0,1), class = sigma)),
       control = list(adapt_delta = 0.95),
@@ -226,9 +230,27 @@ b4.3 <-
       seed = 4) 
 ```
 
+
 ```{r echo = FALSE, eval = FALSE, warning=FALSE, message=FALSE}
 #Convergence plot
 plot(b4.3)
+
+npc_dat2 <- cbind(npc_dat, exp(as.data.frame(predict(b4.3, npc_wide[,3:4]))[,1]))
+npc_dat2 
+
+b <- npc_dat2 %>% 
+  #filter(.[[2]] < 2000) %>% #Võimalik filter, et outliereid eemaldada
+  ggplot(aes(x = as.factor(variation), y = log(.[[3]]), fill = as.factor(variation))) +
+  ggtitle("Distribution of raw data")+
+  geom_violin(trim=FALSE, alpha =0.5)+
+  geom_jitter(shape=10, position=position_jitter(0.05), color = "#7570B3")+
+  geom_boxplot(width=0.15, fill = "white", alpha = 0.5, color = "black" )+
+  scale_fill_brewer(palette="Dark2")+
+  scale_x_discrete(name = "Variation")+
+  scale_y_continuous(name = "MRR", n.breaks = 20)+
+  guides(fill=guide_legend(title = "Variations"))
+
+a | b
 ```
 
 Next we move into model territory. The table here shows the output of the model which simulates mean MRR per company.  
